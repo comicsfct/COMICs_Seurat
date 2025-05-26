@@ -38,10 +38,29 @@ setwd("~/My/directory") # Set working directory
 
 ````
 
-## Read and process
+## Read, QC and process
 
 ````
 seurat <- readRDS("my_object.rds")
+
+#### Initial QC ####
+
+# Check mitochondrial gene expression
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^MT-")
+
+# Visualize QC metrics as a violin plot
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# Filter based on the plots -> Subjective filters, consider the characteristics of your data!
+# Some guide lines: [200,500] < nFeature_RNA < [2500,5000] ; percent.mt < 5 for normal cells and < 20 for tumor cells
+
+seurat <- subset(seurat, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+#### Normalization and Scaling ####
+
+# For this step we will use the SCTransform function from seurat. But first, we will run the standard pipeline
+# and check if there is separation in the PCA due to a specific variable. If so, we also select that var to be
+# regressed in the SCTransform
 
 #Normalize
 seurat <- NormalizeData(object = seurat, normalization.method = "LogNormalize", scale.factor = 10000)
@@ -50,13 +69,21 @@ seurat <- NormalizeData(object = seurat, normalization.method = "LogNormalize", 
 seurat <- FindVariableFeatures(object = seurat, mean.function = ExpMean, dispersion.function = LogVMR,nfeatures = 5000)
 
 #Scale Data - Takes a while!
-seurat <- ScaleData(object = seurat, vars.to.regress = c("nCount_RNA", "nFeature_RNA", "percent.mt"), features = VariableFeatures(seurat))
+seurat <- ScaleData(object = seurat, features = VariableFeatures(seurat))
 
+#Run PCA and check for possible separations based on specific variables
 
-#Run PCA and Determine Dimensions for 90% Variance. Correct Batch effect with Harmony
+seurat <- RunPCA(object = seurat, features = VariableFeatures(object = seurat)) 
+DimPlot(seurat, reduction = "pca", group.by = "percent.mt") + NoLegend() # É assim que fazes João?
+
+# Run SCTransform. Adjust vars to regress as needed
+
+seurat <- SCTransform(seurat, vars.to.regress = "percent.mt", verbose = FALSE)
+
+#Run PCA and Determine Dimensions for 90% Variance. Correct Batch effect with Harmony if needed
 
 seurat <- RunPCA(object = seurat, features = VariableFeatures(object = seurat))
-seurat <- RunHarmony(seurat, group.by.vars = c("Variables_of_Interest_For_Batch_Effect"), plot_convergence = F)
+seurat <- RunHarmony(seurat, group.by.vars = c("Variables_of_Interest_For_Batch_Effect"), plot_convergence = F) # To check if you have batch effect you may need to do the reach the UMAP Step and plot according to varaibles like sample origin
 
 stdev <- seurat@reductions$harmony@stdev
 var <- stdev^2
@@ -89,29 +116,6 @@ saveRDS(seurat,"my_object_processed.rds")
 
 ````
 
-## Find markers 
-
-````
-# Find Markers Based on clusters
-
-# Do you want only positive markers? Only LogFC > 1?
-# How strict do you want to be regarding the % of cells expressing the marker?
-
-seurat.markers <- FindAllMarkers(seurat, only.pos = TRUE,
-                                          logfc.threshold = 1,min.pct=0.2) 
-
-write.table(seurat.markers, "All_markers.csv")
-
-# Find Markers based on other variable - ex, celltype
-
-Idents(seurat) <- seurat_filtered@meta.data$celltype
-
-seurat.markers <- FindAllMarkers(seurat, only.pos = TRUE,
-                                          logfc.threshold = 1,min.pct=0.2) 
-
-write.table(seurat.markers, "All_markers_celltype.csv")
-````
-
 ## Visualize 
 
 ````
@@ -142,6 +146,36 @@ ggsave(paste0("Dotplot.pdf"), plot = combined_plot, width = 10, height = 8)
 
 ````
 
+## Find markers 
+
+````
+# Find Markers Based on clusters
+
+# Do you want only positive markers? Only LogFC > 1?
+# How strict do you want to be regarding the % of cells expressing the marker?
+
+seurat <- PrepSCTFindMarkers(seurat)
+
+seurat.markers <- FindAllMarkers(seurat, only.pos = TRUE, assay = "SCT",
+                                          logfc.threshold = 1,min.pct=0.2)
+
+# Eles têm esta info na vignette do SCT mas não devemos sempre re-normalizar quando se faz um subset? Acho que não faz sentido ter isto
+# If running on a subset of the original object after running PrepSCTFindMarkers(), FindMarkers() should be invoked with recorrect_umi = FALSE to use the existing corrected counts
+
+write.table(seurat.markers, "All_markers.csv")
+
+# Find Markers based on other variable - ex, celltype
+
+Idents(seurat) <- seurat_filtered@meta.data$celltype
+
+seurat.markers <- FindAllMarkers(seurat, only.pos = TRUE,
+                                          logfc.threshold = 1,min.pct=0.2) 
+
+write.table(seurat.markers, "All_markers_celltype.csv")
+````
+
+
+
 ## Adjusting resolution 
 
 Changing the number of clusters can be done by adjusting the resolution. Clustree allows to have an idea of how the clusters change with different resolutions.
@@ -161,3 +195,5 @@ Sometimes you will want to consider only a subset of cells. This can be easily d
 ````
 fibro_subset <- subset(seurat, subset = celltype == "Fibroblast")
 ````
+
+Don't forget to re-do the normalization steps on the new subset!
